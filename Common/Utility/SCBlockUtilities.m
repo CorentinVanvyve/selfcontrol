@@ -73,4 +73,30 @@
     [settings setValue: nil forKey: @"ActiveBlockAsWhitelist"];
 }
 
++ (BOOL)isInScheduledBlockWindow {
+    NSCalendar* cal = [NSCalendar currentCalendar];
+    NSInteger hour = [cal component: NSCalendarUnitHour fromDate: [NSDate date]];
+    // Block window is 18:00 to 17:00 next day (i.e. NOT 17:00-18:00 free window)
+    return hour >= 18 || hour < 17;
+}
+
++ (NSDate*)nextScheduledBlockEndDate {
+    NSCalendar* cal = [NSCalendar currentCalendar];
+    NSDate* now = [NSDate date];
+
+    NSDateComponents* comps = [cal components: (NSCalendarUnitYear | NSCalendarUnitMonth | NSCalendarUnitDay) fromDate: now];
+    comps.hour = 17;
+    comps.minute = 0;
+    comps.second = 0;
+    NSDate* todayAt17 = [cal dateFromComponents: comps];
+
+    // If 17:00 today is still in the future, the block ends then.
+    // Otherwise (we're past 17:00, i.e. in the 17-18 free window or just past 18:00 start), end tomorrow at 17:00.
+    if ([todayAt17 timeIntervalSinceNow] > 0) {
+        return todayAt17;
+    } else {
+        return [todayAt17 dateByAddingTimeInterval: 86400];
+    }
+}
+
 @end

@@ -22,6 +22,12 @@ NS_ASSUME_NONNULL_BEGIN
 
 + (void)removeBlockFromSettings;
 
+// Scheduled block window: 18:00 to 17:00 next day
++ (BOOL)isInScheduledBlockWindow;
+
+// Returns the next 17:00 (today if before 17:00, tomorrow otherwise)
++ (NSDate*)nextScheduledBlockEndDate;
+
 @end
 
 NS_ASSUME_NONNULL_END

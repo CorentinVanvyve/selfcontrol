@@ -8,8 +8,10 @@
 #import "SCDaemon.h"
 #import "SCDaemonProtocol.h"
 #import "SCDaemonXPC.h"
-#import"SCDaemonBlockMethods.h"
+#import "SCDaemonBlockMethods.h"
 #import "SCFileWatcher.h"
+#import "SCSettings.h"
+#import "SCBlockUtilities.h"
 
 static NSString* serviceName = @"org.eyebeam.selfcontrold";
 float const INACTIVITY_LIMIT_SECS = 60 * 2; // 2 minutes
@@ -62,6 +64,10 @@ float const INACTIVITY_LIMIT_SECS = 60 * 2; // 2 minutes
     // to start the block
     if ([SCBlockUtilities anyBlockIsRunning] || [SCBlockUtilities blockRulesFoundOnSystem]) {
         [self startCheckupTimer];
+    } else {
+        // No block running yet — attempt to start a scheduled block if applicable.
+        // This covers system restarts and the daemon being woken up at 18:00.
+        [SCDaemonBlockMethods startScheduledBlockIfNeeded];
     }
     
     [self startInactivityTimer];
@@ -118,7 +124,16 @@ float const INACTIVITY_LIMIT_SECS = 60 * 2; // 2 minutes
                 [SCDaemonBlockMethods checkupBlock];
                 return;
             }
-            
+
+            // In scheduled mode the daemon must stay alive so it can start the block
+            // at 18:00 without any user interaction. We poll startScheduledBlockIfNeeded
+            // so it kicks in as soon as the clock crosses 18:00.
+            if ([[SCSettings sharedSettings] boolForKey: @"ScheduledBlockEnabled"]) {
+                [SCDaemonBlockMethods startScheduledBlockIfNeeded];
+                [self resetInactivityTimer];
+                return;
+            }
+
             NSLog(@"Daemon inactive for more than %f seconds, exiting!", INACTIVITY_LIMIT_SECS);
             [SCHelperToolUtilities unloadDaemonJob];
         }

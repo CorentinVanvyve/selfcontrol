@@ -8,6 +8,7 @@
 #import "SCDaemonBlockMethods.h"
 #import "SCSettings.h"
 #import "SCHelperToolUtilities.h"
+#import "SCBlockUtilities.h"
 #import "PacketFilter.h"
 #import "BlockManager.h"
 #import "SCDaemon.h"
@@ -337,6 +338,75 @@ NSTimeInterval CHECKUP_LOCK_TIMEOUT = 0.5; // use a shorter lock timeout for che
     if (shouldRunIntegrityCheck) {
         [SCDaemonBlockMethods checkBlockIntegrity];
     }
+}
+
++ (void)startScheduledBlockIfNeeded {
+    if (![SCDaemonBlockMethods lockOrTimeout: nil]) {
+        return;
+    }
+
+    [[SCDaemon sharedDaemon] resetInactivityTimer];
+    [SCSentry addBreadcrumb: @"Daemon checking if scheduled block should start" category: @"daemon"];
+
+    SCSettings* settings = [SCSettings sharedSettings];
+
+    if (![settings boolForKey: @"ScheduledBlockEnabled"]) {
+        [self.daemonMethodLock unlock];
+        return;
+    }
+
+    if (![SCBlockUtilities isInScheduledBlockWindow]) {
+        NSLog(@"INFO: Not in scheduled block window, skipping auto-start");
+        [self.daemonMethodLock unlock];
+        return;
+    }
+
+    if ([SCBlockUtilities anyBlockIsRunning]) {
+        NSLog(@"INFO: Scheduled block already running");
+        [self.daemonMethodLock unlock];
+        return;
+    }
+
+    NSArray* blocklist = [settings valueForKey: @"Blocklist"];
+    BOOL isAllowlist = [settings boolForKey: @"BlockAsWhitelist"];
+    NSDate* endDate = [SCBlockUtilities nextScheduledBlockEndDate];
+
+    if ([blocklist count] == 0 && !isAllowlist) {
+        NSLog(@"INFO: Scheduled block skipped - blocklist is empty");
+        [self.daemonMethodLock unlock];
+        return;
+    }
+
+    [settings setValue: blocklist forKey: @"ActiveBlocklist"];
+    [settings setValue: @(isAllowlist) forKey: @"ActiveBlockAsWhitelist"];
+    [settings setValue: endDate forKey: @"BlockEndDate"];
+    [settings setValue: [settings valueForKey: @"ClearCaches"] forKey: @"ClearCaches"];
+    [settings setValue: [settings valueForKey: @"AllowLocalNetworks"] forKey: @"AllowLocalNetworks"];
+    [settings setValue: [settings valueForKey: @"EvaluateCommonSubdomains"] forKey: @"EvaluateCommonSubdomains"];
+    [settings setValue: [settings valueForKey: @"IncludeLinkedDomains"] forKey: @"IncludeLinkedDomains"];
+    [settings setValue: [settings valueForKey: @"BlockSoundShouldPlay"] forKey: @"BlockSoundShouldPlay"];
+    [settings setValue: [settings valueForKey: @"BlockSound"] forKey: @"BlockSound"];
+    [settings setValue: [settings valueForKey: @"EnableErrorReporting"] forKey: @"EnableErrorReporting"];
+
+    NSLog(@"Starting scheduled block, ends at %@", endDate);
+    [SCHelperToolUtilities installBlockRulesFromSettings];
+    [settings setValue: @YES forKey: @"BlockIsRunning"];
+
+    NSError* syncErr = [settings syncSettingsAndWait: 5];
+    if (syncErr != nil) {
+        NSLog(@"WARNING: Sync failed after starting scheduled block: %@", syncErr);
+        [SCSentry captureError: syncErr];
+    }
+
+    [SCHelperToolUtilities sendConfigurationChangedNotification];
+    [SCHelperToolUtilities clearCachesIfRequested];
+
+    [SCSentry addBreadcrumb: @"Daemon started scheduled block successfully" category: @"daemon"];
+    NSLog(@"INFO: Scheduled block started, ends at %@", endDate);
+
+    [[SCDaemon sharedDaemon] resetInactivityTimer];
+    [[SCDaemon sharedDaemon] startCheckupTimer];
+    [self.daemonMethodLock unlock];
 }
 
 + (void)checkBlockIntegrity {

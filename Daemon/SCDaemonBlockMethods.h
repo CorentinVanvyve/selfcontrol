@@ -31,6 +31,11 @@ NS_ASSUME_NONNULL_BEGIN
 
 + (void)checkBlockIntegrity;
 
+// Starts the scheduled block if ScheduledBlockEnabled is YES, we are in the
+// 18:00-17:00 window, and no block is currently running. Safe to call from
+// the daemon directly (bypasses XPC auth since we are already root).
++ (void)startScheduledBlockIfNeeded;
+
 @end
 
 NS_ASSUME_NONNULL_END
