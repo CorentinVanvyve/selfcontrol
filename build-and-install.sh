@@ -1,11 +1,11 @@
 #!/bin/bash
-# Builds SelfControl.app for local personal use (ad-hoc signed, no Apple
-# Developer account needed) and installs it to the Desktop.
+# Builds Coblock.app (SelfControl fork) for local personal use (ad-hoc
+# signed, no Apple Developer account needed) and installs it to the Desktop.
 set -euo pipefail
 
 WORKSPACE="selfcontrol.xcworkspace"
 SCHEME="SelfControl"
-DEST_APP="$HOME/Desktop/SelfControl.app"
+DEST_APP="$HOME/Desktop/Coblock.app"
 
 cd "$(dirname "$0")"
 
@@ -27,7 +27,8 @@ if [ ! -d "$BUILT_APP" ]; then
 fi
 
 echo "==> Installing to $DEST_APP..."
-osascript -e 'quit app "SelfControl"' 2>/dev/null || true
+osascript -e 'quit app "Coblock"' 2>/dev/null || true
+pkill -f "$DEST_APP/Contents/MacOS/SelfControl" 2>/dev/null || true
 sleep 1
 rm -rf "$DEST_APP"
 cp -R "$BUILT_APP" "$DEST_APP"
