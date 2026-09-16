@@ -85,6 +85,11 @@ NSString* const SETTINGS_FILE_DIR = @"/usr/local/etc/";
 
         @"BlockIsRunning": @NO, // tells us whether a block is actually running on the system (to the best of our knowledge)
         @"TamperingDetected": @NO,
+
+        // scheduled block: free/edit window bounds (hours, 0-23). Matches the original
+        // hardcoded 17:00-18:00 free window.
+        @"FreeWindowStartHour": @17,
+        @"FreeWindowEndHour": @18,
         
         // block settings
         // the user sets these in defaults, then when a block is started they're copied over to settings

@@ -273,6 +273,47 @@ NSTimeInterval CHECKUP_LOCK_TIMEOUT = 0.5; // use a shorter lock timeout for che
     [self.daemonMethodLock unlock];
 }
 
++ (void)updateScheduledBlockEnabled:(BOOL)enabled blocklist:(NSArray<NSString*>*)blocklist isAllowlist:(BOOL)isAllowlist freeWindowStartHour:(NSInteger)freeWindowStartHour freeWindowEndHour:(NSInteger)freeWindowEndHour authorization:(NSData *)authData reply:(void(^)(NSError* error))reply {
+    if (![SCDaemonBlockMethods lockOrTimeout: reply]) {
+        return;
+    }
+
+    [[SCDaemon sharedDaemon] resetInactivityTimer];
+    [SCSentry addBreadcrumb: @"Daemon method updateScheduledBlockEnabled called" category: @"daemon"];
+
+    // defense in depth - the app should already reject this before sending, but never trust the client
+    if ([SCBlockUtilities freeWindowDurationHoursFromStart: freeWindowStartHour end: freeWindowEndHour] < 1) {
+        NSLog(@"ERROR: Rejecting scheduled block config with free window < 1 hour (start=%ld end=%ld)", (long)freeWindowStartHour, (long)freeWindowEndHour);
+        NSError* err = [SCErr errorWithCode: 312];
+        [SCSentry captureError: err];
+        reply(err);
+        [self.daemonMethodLock unlock];
+        return;
+    }
+
+    SCSettings* settings = [SCSettings sharedSettings];
+    [settings setValue: @(enabled) forKey: @"ScheduledBlockEnabled"];
+    [settings setValue: blocklist forKey: @"Blocklist"];
+    [settings setValue: @(isAllowlist) forKey: @"BlockAsWhitelist"];
+    [settings setValue: @(freeWindowStartHour) forKey: @"FreeWindowStartHour"];
+    [settings setValue: @(freeWindowEndHour) forKey: @"FreeWindowEndHour"];
+
+    NSError* syncErr = [settings syncSettingsAndWait: 5];
+    if (syncErr != nil) {
+        NSLog(@"WARNING: Sync failed or timed out with error %@ after updating scheduled block config", syncErr);
+        [SCSentry captureError: syncErr];
+    }
+
+    [SCHelperToolUtilities sendConfigurationChangedNotification];
+
+    [SCSentry addBreadcrumb: @"Daemon updated scheduled block config successfully" category: @"daemon"];
+    NSLog(@"INFO: Scheduled block config updated (enabled=%d).", enabled);
+    reply(nil);
+
+    [[SCDaemon sharedDaemon] resetInactivityTimer];
+    [self.daemonMethodLock unlock];
+}
+
 + (void)checkupBlock {
     if (![SCDaemonBlockMethods lockOrTimeout: nil timeout: CHECKUP_LOCK_TIMEOUT]) {
         return;

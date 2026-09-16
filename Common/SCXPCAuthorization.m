@@ -111,7 +111,8 @@ static NSDictionary* kAuthorizationRuleAuthenticateAsAdmin2MinTimeout;
         sCommandInfo = @{
             NSStringFromSelector(@selector(startBlockWithControllingUID:blocklist:isAllowlist:endDate:blockSettings:authorization:reply:)) : startBlockCommandInfo,
             NSStringFromSelector(@selector(updateBlocklist:authorization:reply:)) : modifyBlockCommandInfo,
-            NSStringFromSelector(@selector(updateBlockEndDate:authorization:reply:)) : modifyBlockCommandInfo
+            NSStringFromSelector(@selector(updateBlockEndDate:authorization:reply:)) : modifyBlockCommandInfo,
+            NSStringFromSelector(@selector(updateScheduledBlockEnabled:blocklist:isAllowlist:freeWindowStartHour:freeWindowEndHour:authorization:reply:)) : modifyBlockCommandInfo
             #pragma clang diagnostic pop
         };
     });

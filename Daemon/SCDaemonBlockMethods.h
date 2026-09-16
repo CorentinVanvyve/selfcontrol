@@ -29,6 +29,11 @@ NS_ASSUME_NONNULL_BEGIN
 // (i.e. extends the block)
 + (void)updateBlockEndDate:(NSDate*)newEndDate authorization:(NSData *)authData reply:(void(^)(NSError* error))reply;
 
+// enables/disables the daily scheduled block, and records the blocklist/allowlist choice and
+// free/edit window hours to use when it auto-starts. Must run in the daemon since only it can
+// write SCSettings.
++ (void)updateScheduledBlockEnabled:(BOOL)enabled blocklist:(NSArray<NSString*>*)blocklist isAllowlist:(BOOL)isAllowlist freeWindowStartHour:(NSInteger)freeWindowStartHour freeWindowEndHour:(NSInteger)freeWindowEndHour authorization:(NSData *)authData reply:(void(^)(NSError* error))reply;
+
 + (void)checkBlockIntegrity;
 
 // Starts the scheduled block if ScheduledBlockEnabled is YES, we are in the

@@ -22,11 +22,23 @@ NS_ASSUME_NONNULL_BEGIN
 
 + (void)removeBlockFromSettings;
 
-// Scheduled block window: 18:00 to 17:00 next day
+// Returns YES if we're currently in the free/edit window (i.e. NOT the scheduled block window).
+// The free window is configured via FreeWindowStartHour/FreeWindowEndHour in SCSettings
+// (defaults 17/18, matching the original hardcoded 17:00-18:00 free window).
 + (BOOL)isInScheduledBlockWindow;
 
-// Returns the next 17:00 (today if before 17:00, tomorrow otherwise)
+// Returns the next free-window start time (today if it hasn't happened yet, tomorrow otherwise) -
+// this is when a scheduled block should end.
 + (NSDate*)nextScheduledBlockEndDate;
+
+// The currently configured free-window bounds (reads SCSettings, falls back to 17/18).
++ (NSInteger)freeWindowStartHour;
++ (NSInteger)freeWindowEndHour;
+
+// Pure, wrap-aware helpers shared by validation (app + daemon) and the window check above.
+// Duration treats start==end as 0 hours (i.e. invalid/degenerate), not 24.
++ (NSInteger)freeWindowDurationHoursFromStart:(NSInteger)startHour end:(NSInteger)endHour;
++ (BOOL)isHour:(NSInteger)hour inWindowFromStart:(NSInteger)startHour end:(NSInteger)endHour;
 
 @end
 

@@ -20,6 +20,12 @@ NS_ASSUME_NONNULL_BEGIN
 // XPC method to extend block
 - (void)updateBlockEndDate:(NSDate*)newEndDate authorization:(NSData *)authData reply:(void(^)(NSError* error))reply;
 
+// XPC method to configure (enable/disable, set the blocklist, and set the free/edit window
+// hours for) the daily scheduled block. This must go through the daemon because SCSettings is
+// read-only from the app process - only the root daemon can persist it, and the daemon is what
+// reads it back to decide when to auto-start/stop the block.
+- (void)updateScheduledBlockEnabled:(BOOL)enabled blocklist:(NSArray<NSString*>*)blocklist isAllowlist:(BOOL)isAllowlist freeWindowStartHour:(NSInteger)freeWindowStartHour freeWindowEndHour:(NSInteger)freeWindowEndHour authorization:(NSData *)authData reply:(void(^)(NSError* error))reply;
+
 // XPC method to get version of the installed daemon
 - (void)getVersionWithReply:(void(^)(NSString * version))reply;
 

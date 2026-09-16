@@ -53,6 +53,11 @@
 	NSLock* refreshUILock_;
 	BOOL blockIsOn;
 	BOOL addingBlock;
+
+    // Free/edit window hour pickers - built programmatically (see setUpFreeWindowControls),
+    // not in the XIB, so they're plain ivars rather than IBOutlets.
+    NSPopUpButton* freeWindowStartPopUp_;
+    NSPopUpButton* freeWindowEndPopUp_;
 }
 
 @property (assign) BOOL addingBlock;

@@ -73,29 +73,62 @@
     [settings setValue: nil forKey: @"ActiveBlockAsWhitelist"];
 }
 
++ (NSInteger)freeWindowStartHour {
+    SCSettings* settings = [SCSettings sharedSettings];
+    id value = [settings valueForKey: @"FreeWindowStartHour"];
+    return value != nil ? [value integerValue] : 17;
+}
+
++ (NSInteger)freeWindowEndHour {
+    SCSettings* settings = [SCSettings sharedSettings];
+    id value = [settings valueForKey: @"FreeWindowEndHour"];
+    return value != nil ? [value integerValue] : 18;
+}
+
++ (NSInteger)freeWindowDurationHoursFromStart:(NSInteger)startHour end:(NSInteger)endHour {
+    return ((endHour - startHour) + 24) % 24;
+}
+
++ (BOOL)isHour:(NSInteger)hour inWindowFromStart:(NSInteger)startHour end:(NSInteger)endHour {
+    if (startHour == endHour) {
+        // degenerate window - treat as "never" rather than "always" (safer default: no free window)
+        return NO;
+    }
+    if (startHour < endHour) {
+        return hour >= startHour && hour < endHour;
+    }
+    // wraps midnight, e.g. start=22 end=2
+    return hour >= startHour || hour < endHour;
+}
+
 + (BOOL)isInScheduledBlockWindow {
     NSCalendar* cal = [NSCalendar currentCalendar];
     NSInteger hour = [cal component: NSCalendarUnitHour fromDate: [NSDate date]];
-    // Block window is 18:00 to 17:00 next day (i.e. NOT 17:00-18:00 free window)
-    return hour >= 18 || hour < 17;
+
+    BOOL inFreeWindow = [SCBlockUtilities isHour: hour
+                                inWindowFromStart: [SCBlockUtilities freeWindowStartHour]
+                                              end: [SCBlockUtilities freeWindowEndHour]];
+    return !inFreeWindow;
 }
 
 + (NSDate*)nextScheduledBlockEndDate {
     NSCalendar* cal = [NSCalendar currentCalendar];
     NSDate* now = [NSDate date];
+    NSInteger freeWindowStartHour = [SCBlockUtilities freeWindowStartHour];
 
     NSDateComponents* comps = [cal components: (NSCalendarUnitYear | NSCalendarUnitMonth | NSCalendarUnitDay) fromDate: now];
-    comps.hour = 17;
+    comps.hour = freeWindowStartHour;
     comps.minute = 0;
     comps.second = 0;
-    NSDate* todayAt17 = [cal dateFromComponents: comps];
+    NSDate* todayAtFreeWindowStart = [cal dateFromComponents: comps];
 
-    // If 17:00 today is still in the future, the block ends then.
-    // Otherwise (we're past 17:00, i.e. in the 17-18 free window or just past 18:00 start), end tomorrow at 17:00.
-    if ([todayAt17 timeIntervalSinceNow] > 0) {
-        return todayAt17;
+    // If the free window's start time today is still in the future, the block ends then.
+    // Otherwise (we're already past it, i.e. in the free window or already back in the block
+    // window), the block ends at the free window's start time tomorrow.
+    if ([todayAtFreeWindowStart timeIntervalSinceNow] > 0) {
+        return todayAtFreeWindowStart;
     } else {
-        return [todayAt17 dateByAddingTimeInterval: 86400];
+        return [todayAtFreeWindowStart dateByAddingTimeInterval: 86400];
     }
 }
 

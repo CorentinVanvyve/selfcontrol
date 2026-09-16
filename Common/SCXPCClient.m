@@ -351,6 +351,28 @@
     }];
 }
 
+- (void)updateScheduledBlockEnabled:(BOOL)enabled blocklist:(NSArray<NSString*>*)blocklist isAllowlist:(BOOL)isAllowlist freeWindowStartHour:(NSInteger)freeWindowStartHour freeWindowEndHour:(NSInteger)freeWindowEndHour reply:(void(^)(NSError* error))reply {
+    [self connectAndExecuteCommandBlock:^(NSError * connectError) {
+        if (connectError != nil) {
+            NSLog(@"Scheduled block config update failed with connection error: %@", connectError);
+            [SCSentry captureError: connectError];
+            reply(connectError);
+        } else {
+            [[self.daemonConnection remoteObjectProxyWithErrorHandler:^(NSError * proxyError) {
+                NSLog(@"Scheduled block config update failed with remote object proxy error: %@", proxyError);
+                [SCSentry captureError: proxyError];
+                reply(proxyError);
+            }] updateScheduledBlockEnabled: enabled blocklist: blocklist isAllowlist: isAllowlist freeWindowStartHour: freeWindowStartHour freeWindowEndHour: freeWindowEndHour authorization: self.authorization reply:^(NSError* error) {
+                if (error != nil && ![SCMiscUtilities errorIsAuthCanceled: error]) {
+                    NSLog(@"Scheduled block config update failed with error = %@\n", error);
+                    [SCSentry captureError: error];
+                }
+                reply(error);
+            }];
+        }
+    }];
+}
+
 - (NSString*)selfControlHelperToolPath {
     static NSString* path;
 

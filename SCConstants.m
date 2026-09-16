@@ -43,6 +43,8 @@ OSStatus const AUTH_CANCELLED_STATUS = -60006;
         defaultDefaultsDict = @{
             @"Blocklist": @[],
             @"BlockAsWhitelist": @NO,
+            @"FreeWindowStartHour": @17,
+            @"FreeWindowEndHour": @18,
             @"HighlightInvalidHosts": @YES,
             @"VerifyInternetConnection": @YES,
             @"TimerWindowFloats": @NO,

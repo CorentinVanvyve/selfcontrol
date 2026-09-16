@@ -65,6 +65,24 @@
     [SCDaemonBlockMethods updateBlockEndDate: newEndDate authorization: authData reply: reply];
 }
 
+- (void)updateScheduledBlockEnabled:(BOOL)enabled blocklist:(NSArray<NSString*>*)blocklist isAllowlist:(BOOL)isAllowlist freeWindowStartHour:(NSInteger)freeWindowStartHour freeWindowEndHour:(NSInteger)freeWindowEndHour authorization:(NSData *)authData reply:(void(^)(NSError* error))reply {
+    NSLog(@"XPC method called: updateScheduledBlockEnabled");
+
+    NSError* error = [SCXPCAuthorization checkAuthorization: authData command: _cmd];
+    if (error != nil) {
+        if (![SCMiscUtilities errorIsAuthCanceled: error]) {
+            NSLog(@"ERROR: XPC authorization failed due to error %@", error);
+            [SCSentry captureError: error];
+        }
+        reply(error);
+        return;
+    } else {
+        NSLog(@"AUTHORIZATION ACCEPTED for updateScheduledBlockEnabled with authData %@ and command %s", authData, sel_getName(_cmd));
+    }
+
+    [SCDaemonBlockMethods updateScheduledBlockEnabled: enabled blocklist: blocklist isAllowlist: isAllowlist freeWindowStartHour: freeWindowStartHour freeWindowEndHour: freeWindowEndHour authorization: authData reply: reply];
+}
+
 // Part of the HelperToolProtocol.  Returns the version number of the tool.  Note that never
 // requires authorization.
 - (void)getVersionWithReply:(void(^)(NSString * version))reply {

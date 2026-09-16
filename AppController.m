@@ -21,7 +21,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #import "AppController.h"
-#import "MASPreferencesWindowController.h"
+#import "MASPreferencesWindowCon`troller.h"
 #import "PreferencesGeneralViewController.h"
 #import "PreferencesAdvancedViewController.h"
 #import "SCTimeIntervalFormatter.h"
@@ -78,6 +78,109 @@
 	[submitButton_ setEnabled: (numMinutes > 0) && ([[defaults_ arrayForKey: @"Blocklist"] count] > 0)];
 }
 
+// SCSettings is read-only from the app process (only the root daemon can write it - see
+// SCSettings.m's `_readOnly = (geteuid() != 0)`), so the app can't persist ScheduledBlockEnabled/
+// Blocklist/BlockAsWhitelist by poking settings_ directly - any such write is silently a no-op.
+// Instead we ask the daemon (over an authorized XPC call) to write it on our behalf. This is
+// what lets the daemon auto-start the scheduled block at 18:00 even when the app isn't running.
+- (void)pushScheduledBlockConfigEnabled:(BOOL)enabled reply:(void(^)(NSError* error))reply {
+    [self.xpc updateScheduledBlockEnabled: enabled
+                                 blocklist: [defaults_ arrayForKey: @"Blocklist"]
+                               isAllowlist: [defaults_ boolForKey: @"BlockAsWhitelist"]
+                       freeWindowStartHour: [defaults_ integerForKey: @"FreeWindowStartHour"]
+                         freeWindowEndHour: [defaults_ integerForKey: @"FreeWindowEndHour"]
+                                     reply: reply];
+}
+
+// "17h00" style formatting, matching the rest of the scheduled-block UI strings.
+- (NSString*)freeWindowTimeStringForHour:(NSInteger)hour {
+    return [NSString stringWithFormat: @"%02ldh00", (long)hour];
+}
+
+// Builds the two free/edit-window hour pop-ups and places them where the (now largely vestigial,
+// since scheduled mode is the only flow addBlock: drives) duration slider sits when hidden -
+// added programmatically rather than in MainMenu.xib to avoid hand-editing that file's existing
+// autolayout constraint graph without a visual editor to verify it.
+- (void)setUpFreeWindowControls {
+    NSView* container = initialWindow_.contentView;
+    CGRect sliderFrame = blockDurationSlider_.frame; // x=18 y=40 width=584 height=30
+
+    NSTextField* fromLabel = [NSTextField labelWithString: NSLocalizedString(@"Fenêtre libre : de", @"Free window start label")];
+    NSTextField* toLabel = [NSTextField labelWithString: NSLocalizedString(@"à", @"Free window end label")];
+
+    freeWindowStartPopUp_ = [[NSPopUpButton alloc] initWithFrame: NSZeroRect pullsDown: NO];
+    freeWindowEndPopUp_ = [[NSPopUpButton alloc] initWithFrame: NSZeroRect pullsDown: NO];
+    for (NSPopUpButton* popUp in @[freeWindowStartPopUp_, freeWindowEndPopUp_]) {
+        for (NSInteger hour = 0; hour < 24; hour++) {
+            [popUp addItemWithTitle: [self freeWindowTimeStringForHour: hour]];
+        }
+        popUp.target = self;
+        popUp.action = @selector(freeWindowHourChanged:);
+        popUp.translatesAutoresizingMaskIntoConstraints = NO;
+    }
+    [freeWindowStartPopUp_ selectItemAtIndex: [defaults_ integerForKey: @"FreeWindowStartHour"]];
+    [freeWindowEndPopUp_ selectItemAtIndex: [defaults_ integerForKey: @"FreeWindowEndHour"]];
+
+    for (NSTextField* label in @[fromLabel, toLabel]) {
+        label.translatesAutoresizingMaskIntoConstraints = NO;
+    }
+
+    [container addSubview: fromLabel];
+    [container addSubview: freeWindowStartPopUp_];
+    [container addSubview: toLabel];
+    [container addSubview: freeWindowEndPopUp_];
+
+    // Single horizontal row, vertically centered on the (hidden, in scheduled mode) slider's row,
+    // left-aligned to the slider's leading edge.
+    [NSLayoutConstraint activateConstraints: @[
+        [fromLabel.centerYAnchor constraintEqualToAnchor: blockDurationSlider_.centerYAnchor],
+        [fromLabel.leadingAnchor constraintEqualToAnchor: blockDurationSlider_.leadingAnchor constant: sliderFrame.origin.x - 19], // slider itself is inset 19pt from window leading; match that
+
+        [freeWindowStartPopUp_.centerYAnchor constraintEqualToAnchor: blockDurationSlider_.centerYAnchor],
+        [freeWindowStartPopUp_.leadingAnchor constraintEqualToAnchor: fromLabel.trailingAnchor constant: 6],
+
+        [toLabel.centerYAnchor constraintEqualToAnchor: blockDurationSlider_.centerYAnchor],
+        [toLabel.leadingAnchor constraintEqualToAnchor: freeWindowStartPopUp_.trailingAnchor constant: 12],
+
+        [freeWindowEndPopUp_.centerYAnchor constraintEqualToAnchor: blockDurationSlider_.centerYAnchor],
+        [freeWindowEndPopUp_.leadingAnchor constraintEqualToAnchor: toLabel.trailingAnchor constant: 6],
+    ]];
+}
+
+- (IBAction)freeWindowHourChanged:(id)sender {
+    NSInteger newStart = freeWindowStartPopUp_.indexOfSelectedItem;
+    NSInteger newEnd = freeWindowEndPopUp_.indexOfSelectedItem;
+
+    if ([SCBlockUtilities freeWindowDurationHoursFromStart: newStart end: newEnd] < 1) {
+        // revert to the last-saved values and explain why
+        [freeWindowStartPopUp_ selectItemAtIndex: [defaults_ integerForKey: @"FreeWindowStartHour"]];
+        [freeWindowEndPopUp_ selectItemAtIndex: [defaults_ integerForKey: @"FreeWindowEndHour"]];
+
+        NSAlert* alert = [[NSAlert alloc] init];
+        alert.messageText = NSLocalizedString(@"Fenêtre trop courte", @"Free window too short alert title");
+        alert.informativeText = NSLocalizedString(@"La fenêtre libre doit durer au moins 1 heure.", @"Free window too short alert message");
+        [alert addButtonWithTitle: NSLocalizedString(@"OK", @"OK button")];
+        [alert runModal];
+        return;
+    }
+
+    [defaults_ setInteger: newStart forKey: @"FreeWindowStartHour"];
+    [defaults_ setInteger: newEnd forKey: @"FreeWindowEndHour"];
+
+    // only push to the daemon right away if scheduling is already on - otherwise these just sit
+    // in defaults_ and get sent the first time the user turns scheduling on, like Blocklist does
+    if ([settings_ boolForKey: @"ScheduledBlockEnabled"]) {
+        [self pushScheduledBlockConfigEnabled: YES reply:^(NSError* error) {
+            if (error != nil) {
+                [SCUIUtilities presentError: error];
+            }
+            [self refreshUserInterface];
+        }];
+    } else {
+        [self refreshUserInterface];
+    }
+}
+
 - (IBAction)addBlock:(id)sender {
     BOOL scheduledEnabled = [settings_ boolForKey: @"ScheduledBlockEnabled"];
 
@@ -92,29 +195,34 @@
             return;
         }
 
-        [settings_ setValue: @YES forKey: @"ScheduledBlockEnabled"];
-        [settings_ synchronizeSettings];
-
         [self installScheduledBlock];
     } else {
         // ── Deactivate scheduled mode (only allowed in the 17:00-18:00 window) ──
         if ([SCBlockUtilities isInScheduledBlockWindow]) {
             NSAlert* alert = [[NSAlert alloc] init];
             alert.messageText = NSLocalizedString(@"Désactivation impossible", @"Cannot deactivate alert title");
-            alert.informativeText = NSLocalizedString(@"Le blocage planifié ne peut être désactivé qu'entre 17h00 et 18h00.", @"Cannot deactivate alert message");
+            alert.informativeText = [NSString stringWithFormat: NSLocalizedString(@"Le blocage planifié ne peut être désactivé qu'entre %@ et %@.", @"Cannot deactivate alert message"),
+                                      [self freeWindowTimeStringForHour: [defaults_ integerForKey: @"FreeWindowStartHour"]],
+                                      [self freeWindowTimeStringForHour: [defaults_ integerForKey: @"FreeWindowEndHour"]]];
             [alert addButtonWithTitle: NSLocalizedString(@"OK", @"OK button")];
             [alert runModal];
             return;
         }
 
-        [settings_ setValue: @NO forKey: @"ScheduledBlockEnabled"];
-        [settings_ synchronizeSettings];
+        self.addingBlock = YES;
         [self refreshUserInterface];
+        [self pushScheduledBlockConfigEnabled: NO reply:^(NSError* error) {
+            if (error != nil) {
+                [SCUIUtilities presentError: error];
+            }
+            self.addingBlock = NO;
+            [self refreshUserInterface];
+        }];
     }
 }
 
-// Installs the daemon and, if we are already inside the 18:00-17:00 block
-// window, immediately starts the scheduled block.
+// Installs the daemon, tells it to enable scheduled mode with the current blocklist, and -
+// if we are already inside the 18:00-17:00 block window - immediately starts the block.
 - (void)installScheduledBlock {
     self.addingBlock = YES;
     [self refreshUserInterface];
@@ -124,45 +232,48 @@
             if (![SCMiscUtilities errorIsAuthCanceled: error]) {
                 [SCUIUtilities presentError: error];
             }
-            // Roll back: daemon install failed, disable scheduled mode
-            [self->settings_ setValue: @NO forKey: @"ScheduledBlockEnabled"];
-            [self->settings_ synchronizeSettings];
             self.addingBlock = NO;
             [self refreshUserInterface];
             return;
         }
-
-        if (![SCBlockUtilities isInScheduledBlockWindow]) {
-            // Free window — daemon is installed and will auto-start the block at 18:00
-            self.addingBlock = NO;
-            [self refreshUserInterface];
-            return;
-        }
-
-        // We are in the block window: start the block right now
-        [self->settings_ synchronizeSettings];
-        [self->defaults_ synchronize];
 
         [self.xpc refreshConnectionAndRun:^{
-            NSDate* endDate = [SCBlockUtilities nextScheduledBlockEndDate];
-            [self.xpc startBlockWithControllingUID: getuid()
-                                         blocklist: [self->defaults_ arrayForKey: @"Blocklist"]
-                                       isAllowlist: [self->defaults_ boolForKey: @"BlockAsWhitelist"]
-                                           endDate: endDate
-                                     blockSettings: @{
-                                         @"ClearCaches":               [self->defaults_ valueForKey: @"ClearCaches"],
-                                         @"AllowLocalNetworks":        [self->defaults_ valueForKey: @"AllowLocalNetworks"],
-                                         @"EvaluateCommonSubdomains":  [self->defaults_ valueForKey: @"EvaluateCommonSubdomains"],
-                                         @"IncludeLinkedDomains":      [self->defaults_ valueForKey: @"IncludeLinkedDomains"],
-                                         @"BlockSoundShouldPlay":      [self->defaults_ valueForKey: @"BlockSoundShouldPlay"],
-                                         @"BlockSound":                [self->defaults_ valueForKey: @"BlockSound"],
-                                         @"EnableErrorReporting":      [self->defaults_ valueForKey: @"EnableErrorReporting"]
-                                     }
-                                             reply:^(NSError* replyError) {
-                if (replyError != nil) {
-                    [SCUIUtilities presentError: replyError];
+            [self pushScheduledBlockConfigEnabled: YES reply:^(NSError* pushError) {
+                if (pushError != nil) {
+                    [SCUIUtilities presentError: pushError];
+                    self.addingBlock = NO;
+                    [self refreshUserInterface];
+                    return;
                 }
-                [self->settings_ synchronizeSettingsWithCompletion:^(NSError* syncErr) {
+
+                if (![SCBlockUtilities isInScheduledBlockWindow]) {
+                    // Free window — daemon now has the config and will auto-start the block at 18:00
+                    self.addingBlock = NO;
+                    [self refreshUserInterface];
+                    return;
+                }
+
+                // We are in the block window: start the block right now
+                [self->defaults_ synchronize];
+
+                NSDate* endDate = [SCBlockUtilities nextScheduledBlockEndDate];
+                [self.xpc startBlockWithControllingUID: getuid()
+                                             blocklist: [self->defaults_ arrayForKey: @"Blocklist"]
+                                           isAllowlist: [self->defaults_ boolForKey: @"BlockAsWhitelist"]
+                                               endDate: endDate
+                                         blockSettings: @{
+                                             @"ClearCaches":               [self->defaults_ valueForKey: @"ClearCaches"],
+                                             @"AllowLocalNetworks":        [self->defaults_ valueForKey: @"AllowLocalNetworks"],
+                                             @"EvaluateCommonSubdomains":  [self->defaults_ valueForKey: @"EvaluateCommonSubdomains"],
+                                             @"IncludeLinkedDomains":      [self->defaults_ valueForKey: @"IncludeLinkedDomains"],
+                                             @"BlockSoundShouldPlay":      [self->defaults_ valueForKey: @"BlockSoundShouldPlay"],
+                                             @"BlockSound":                [self->defaults_ valueForKey: @"BlockSound"],
+                                             @"EnableErrorReporting":      [self->defaults_ valueForKey: @"EnableErrorReporting"]
+                                         }
+                                                 reply:^(NSError* replyError) {
+                    if (replyError != nil) {
+                        [SCUIUtilities presentError: replyError];
+                    }
                     self.addingBlock = NO;
                     [self refreshUserInterface];
                 }];
@@ -181,7 +292,7 @@
         });
         return retVal;
     }
-    
+
     NSString* LONG_BLOCK_SUPPRESSION_KEY = @"SuppressLongBlockWarning";
     int LONG_BLOCK_THRESHOLD_MINS = 2880; // 2 days
     int FIRST_TIME_LONG_BLOCK_THRESHOLD_MINS = 480; // 8 hours
@@ -212,7 +323,7 @@
     if (modalResponse == NSAlertFirstButtonReturn) {
         return NO;
     }
-    
+
     return YES;
 }
 
@@ -240,7 +351,7 @@
 			[self showTimerWindow];
 			[initialWindow_ close];
 			[self closeDomainList];
-            
+
             // apparently, a block is running, so make sure FirstBlockStarted is true
             [defaults_ setBool: YES forKey: @"FirstBlockStarted"];
 		}
@@ -260,8 +371,9 @@
             NSUserNotificationCenter* userNoteCenter = [NSUserNotificationCenter defaultUserNotificationCenter];
             NSUserNotification* endedNote = [NSUserNotification new];
             if ([settings_ boolForKey: @"ScheduledBlockEnabled"]) {
-                endedNote.title = @"Fenêtre libre jusqu'à 18h00";
-                endedNote.informativeText = @"Le blocage reprendra automatiquement à 18h00.";
+                NSString* freeEndStr = [self freeWindowTimeStringForHour: [defaults_ integerForKey: @"FreeWindowEndHour"]];
+                endedNote.title = [NSString stringWithFormat: @"Fenêtre libre jusqu'à %@", freeEndStr];
+                endedNote.informativeText = [NSString stringWithFormat: @"Le blocage reprendra automatiquement à %@.", freeEndStr];
             } else {
                 endedNote.title = @"Your SelfControl block has ended!";
                 endedNote.informativeText = @"All sites are now accessible.";
@@ -274,6 +386,11 @@
         // ── Scheduled mode UI ───────────────────────────────────────────────
         [blockDurationSlider_ setHidden: YES];
 
+        NSInteger freeStartHour = [defaults_ integerForKey: @"FreeWindowStartHour"];
+        NSInteger freeEndHour = [defaults_ integerForKey: @"FreeWindowEndHour"];
+        NSString* freeStartStr = [self freeWindowTimeStringForHour: freeStartHour];
+        NSString* freeEndStr = [self freeWindowTimeStringForHour: freeEndHour];
+
         if ([settings_ boolForKey: @"ScheduledBlockEnabled"]) {
             if (self.addingBlock) {
                 // Waiting for block to start
@@ -281,18 +398,24 @@
                 [submitButton_ setEnabled: NO];
                 [submitButton_ setTitle: NSLocalizedString(@"Activation...", @"Activating scheduled block button")];
                 [editBlocklistButton_ setEnabled: NO];
+                [freeWindowStartPopUp_ setEnabled: NO];
+                [freeWindowEndPopUp_ setEnabled: NO];
             } else if ([SCBlockUtilities isInScheduledBlockWindow]) {
                 // In block hours but block not yet started (startup edge case)
                 blockSliderTimeDisplayLabel_.stringValue = NSLocalizedString(@"Démarrage du blocage planifié...", @"");
                 [submitButton_ setEnabled: NO];
                 [submitButton_ setTitle: NSLocalizedString(@"Blocage en cours...", @"Block starting button")];
                 [editBlocklistButton_ setEnabled: NO];
+                [freeWindowStartPopUp_ setEnabled: NO];
+                [freeWindowEndPopUp_ setEnabled: NO];
             } else {
-                // Free window: 17:00-18:00
-                blockSliderTimeDisplayLabel_.stringValue = NSLocalizedString(@"Prochain blocage à 18h00", @"Next scheduled block label");
+                // In the free window
+                blockSliderTimeDisplayLabel_.stringValue = [NSString stringWithFormat: NSLocalizedString(@"Prochain blocage à %@", @"Next scheduled block label"), freeEndStr];
                 [submitButton_ setEnabled: YES];
                 [submitButton_ setTitle: NSLocalizedString(@"Désactiver le blocage planifié", @"Disable scheduled block button")];
                 [editBlocklistButton_ setEnabled: YES];
+                [freeWindowStartPopUp_ setEnabled: YES];
+                [freeWindowEndPopUp_ setEnabled: YES];
             }
         } else {
             // Scheduled mode is OFF
@@ -301,8 +424,10 @@
             [submitButton_ setEnabled: !self.addingBlock && canActivate];
             [submitButton_ setTitle: self.addingBlock
                 ? NSLocalizedString(@"Activation...", @"Activating scheduled block button")
-                : NSLocalizedString(@"Activer le blocage planifié (18h-17h)", @"Enable scheduled block button")];
+                : [NSString stringWithFormat: NSLocalizedString(@"Activer le blocage planifié (%@-%@)", @"Enable scheduled block button"), freeEndStr, freeStartStr]];
             [editBlocklistButton_ setEnabled: !self.addingBlock];
+            [freeWindowStartPopUp_ setEnabled: !self.addingBlock];
+            [freeWindowEndPopUp_ setEnabled: !self.addingBlock];
         }
 
 		// if block's off, and we haven't shown it yet, show the first-time modal
@@ -326,11 +451,11 @@
         }
         [settings_ setValue: @NO forKey: @"TamperingDetected"];
     }
-    
+
     // Display "blocklist" or "allowlist" as appropriate
     NSString* listType = [defaults_ boolForKey: @"BlockAsWhitelist"] ? @"Allowlist" : @"Blocklist";
     NSString* editListString = NSLocalizedString(([NSString stringWithFormat: @"Edit %@", listType]), @"Edit list button / menu item");
-    
+
     editBlocklistButton_.title = editListString;
     editBlocklistMenuItem_.title = editListString;
 
@@ -341,7 +466,7 @@
     [SCSentry addBreadcrumb: @"Received configuration changed notification" category: @"app"];
     // if our configuration changed, we should assume the settings may have changed
     [[SCSettings sharedSettings] reloadSettings];
-    
+
     // clean out empty strings from the defaults blocklist (they can end up there occasionally due to UI glitches etc)
     // note we don't screw with the actively running blocklist - that should've been cleaned before it started anyway
     NSArray<NSString*>* cleanedBlocklist = [SCMiscUtilities cleanBlocklist: [defaults_ arrayForKey: @"Blocklist"]];
@@ -349,22 +474,39 @@
 
     // update our blocklist teaser string
     blocklistTeaserLabel_.stringValue = [SCUIUtilities blockTeaserStringWithMaxLength: 60];
-    
+
     // let the domain list know!
     if (domainListWindowController_ != nil) {
         domainListWindowController_.readOnly = [SCUIUtilities blockIsRunning];
         [domainListWindowController_ refreshDomainList];
     }
-    
+
     // let the timer window know!
     if (timerWindowController_ != nil) {
         [timerWindowController_ performSelectorOnMainThread: @selector(configurationChanged)
                                                  withObject: nil
                                               waitUntilDone: NO];
     }
-    
+
     // and our interface may need to change to match!
     [self refreshUserInterface];
+}
+
+// Only called for LOCALLY-originated config changes (i.e. edits made in this same app
+// process, like editing the blocklist in DomainListWindowController) - never for the
+// distributed notification the daemon posts after ITS OWN settings writes. That distinction
+// matters: if we pushed to the daemon in response to the daemon's own notification too, we'd
+// create an infinite XPC ping-pong (daemon writes -> notifies -> app pushes -> daemon writes -> ...).
+- (void)handleLocalConfigurationChangedNotification {
+    [self handleConfigurationChangedNotification];
+
+    if ([settings_ boolForKey: @"ScheduledBlockEnabled"]) {
+        [self pushScheduledBlockConfigEnabled: YES reply:^(NSError* error) {
+            if (error != nil) {
+                NSLog(@"WARNING: Failed to push updated scheduled blocklist to daemon: %@", error);
+            }
+        }];
+    }
 }
 
 - (void)showTimerWindow {
@@ -412,7 +554,7 @@
 
 - (void)applicationDidFinishLaunching:(NSNotification *)aNotification {
 	[NSApplication sharedApplication].delegate = self;
-    
+
     [SCSentry startSentry: @"org.eyebeam.SelfControl"];
 
     settings_ = [SCSettings sharedSettings];
@@ -425,7 +567,7 @@
     // start up our daemon XPC
     self.xpc = [SCXPCClient new];
     [self.xpc connectToHelperTool];
-    
+
     // if we don't have a connection within 0.5 seconds,
     // OR we get back a connection with an old daemon version
     // AND we're running a modern block (which should have a daemon running it)
@@ -466,7 +608,7 @@
 														  object: nil
                                               suspensionBehavior: NSNotificationSuspensionBehaviorDeliverImmediately];
 	[[NSNotificationCenter defaultCenter] addObserver: self
-											 selector: @selector(handleConfigurationChangedNotification)
+											 selector: @selector(handleLocalConfigurationChangedNotification)
 												 name: @"SCConfigurationChangedNotification"
 											   object: nil];
 
@@ -480,11 +622,13 @@
     blockDurationSlider_.maxDuration = [defaults_ integerForKey: @"MaxBlockLength"];
     [blockDurationSlider_ bindDurationToObject: [NSUserDefaultsController sharedUserDefaultsController]
                                        keyPath: @"values.BlockDuration"];
-    
+
+    [self setUpFreeWindowControls];
+
     blocklistTeaserLabel_.stringValue = [SCUIUtilities blockTeaserStringWithMaxLength: 60];
 
 	[self refreshUserInterface];
-    
+
     NSOperatingSystemVersion minRequiredVersion = (NSOperatingSystemVersion){10,10,0}; // Yosemite
     NSString* minRequiredVersionString = @"10.10 (Yosemite)";
 	if (![[NSProcessInfo processInfo] isOperatingSystemAtLeastVersion: minRequiredVersion]) {
@@ -509,7 +653,7 @@
         if (error == nil) {
             NSLog(@"Reinstalled daemon successfully!");
             [SCSentry addBreadcrumb: @"Daemon reinstalled successfully" category:@"app"];
-            
+
             NSLog(@"Retrying helper tool connection...");
             [self.xpc performSelectorOnMainThread: @selector(connectToHelperTool) withObject: nil waitUntilDone: YES];
         } else {
@@ -528,7 +672,9 @@
     if ([settings_ boolForKey: @"ScheduledBlockEnabled"] && [SCBlockUtilities isInScheduledBlockWindow]) {
         NSAlert* alert = [[NSAlert alloc] init];
         alert.messageText = NSLocalizedString(@"Liste verrouillée", @"Blocklist locked alert title");
-        alert.informativeText = NSLocalizedString(@"La liste de blocage ne peut être modifiée qu'entre 17h00 et 18h00.", @"Blocklist locked alert message");
+        alert.informativeText = [NSString stringWithFormat: NSLocalizedString(@"La liste de blocage ne peut être modifiée qu'entre %@ et %@.", @"Blocklist locked alert message"),
+                                  [self freeWindowTimeStringForHour: [defaults_ integerForKey: @"FreeWindowStartHour"]],
+                                  [self freeWindowTimeStringForHour: [defaults_ integerForKey: @"FreeWindowEndHour"]]];
         [alert addButtonWithTitle: NSLocalizedString(@"OK", @"OK button")];
         [alert runModal];
         return;
@@ -551,10 +697,10 @@
 	// INCLUDE the HUD-style timer window.
 	if([[timerWindowController_ window] isVisible])
 		return NO;
-    
+
     if (PFMoveIsInProgress())
         return NO;
-    
+
 	return YES;
 }
 
@@ -564,9 +710,9 @@
     // since the helper daemon should be the only one changing ActiveBlocklist
     NSMutableArray* list = [[settings_ valueForKey: @"ActiveBlocklist"] mutableCopy];
     NSArray<NSString*>* cleanedEntries = [SCMiscUtilities cleanBlocklistEntry: host];
-    
+
     if (cleanedEntries.count == 0) return;
-    
+
     for (NSUInteger i = 0; i < cleanedEntries.count; i++) {
         NSString* entry = cleanedEntries[i];
         // don't add duplicate entries
@@ -574,7 +720,7 @@
             [list addObject: entry];
         }
     }
-       
+
 	[defaults_ setValue: list forKey: @"Blocklist"];
 
 	if(![SCUIUtilities blockIsRunning]) {
@@ -610,7 +756,7 @@
     if (minutesToAdd > maxBlockLength) {
         minutesToAdd = maxBlockLength;
     }
-    
+
     // ensure block health before we try to change it
     if(![SCUIUtilities blockIsRunning]) {
         // This method shouldn't be getting called, a block is not on.
@@ -618,14 +764,14 @@
         // Maybe the UI didn't get properly refreshed, so try refreshing it again
         // before we return.
         [self refreshUserInterface];
-        
+
         NSError* err = [SCErr errorWithCode: 103];
         [SCSentry captureError: err];
         [SCUIUtilities presentError: err];
-        
+
         return;
     }
-  
+
     [self updateBlockEndDate: lock minutesToAdd: minutesToAdd];
 //    [NSThread detachNewThreadSelector: @selector(extendBlockDuration:)
 //                             toTarget: self
@@ -680,7 +826,7 @@
                 // sanity check duration (must be above zero)
                 NSTimeInterval blockDurationSecs = MAX([[self->defaults_ valueForKey: @"BlockDuration"] intValue] * 60, 0);
                 NSDate* newBlockEndDate = [NSDate dateWithTimeIntervalSinceNow: blockDurationSecs];
-                
+
                 // we're about to launch a helper tool which will read settings, so make sure the ones on disk are valid
                 [self->settings_ synchronizeSettings];
                 [self->defaults_ synchronize];
@@ -707,7 +853,7 @@
                         } else {
                             [SCSentry addBreadcrumb: @"Block started successfully" category:@"app"];
                         }
-                        
+
                         // get the new settings
                         [self->settings_ synchronizeSettingsWithCompletion:^(NSError * _Nullable error) {
                             self.addingBlock = false;
@@ -724,7 +870,7 @@
 	if(![lockToUse tryLock]) {
 		return;
 	}
-    
+
     [SCSentry addBreadcrumb: @"App running updateActiveBlocklist method" category:@"app"];
 
     // we're about to launch a helper tool which will read settings, so make sure the ones on disk are valid
@@ -736,13 +882,13 @@
         [self.xpc updateBlocklist: [self->defaults_ arrayForKey: @"Blocklist"]
                             reply:^(NSError * _Nonnull error) {
             [self->timerWindowController_ performSelectorOnMainThread:@selector(closeAddSheet:) withObject: self waitUntilDone: YES];
-            
+
             if (error != nil) {
                 [SCUIUtilities presentError: error];
             } else {
                 [SCSentry addBreadcrumb: @"Blocklist updated successfully" category:@"app"];
             }
-            
+
             [lockToUse unlock];
         }];
     }];
@@ -790,7 +936,7 @@
             } else {
                 [SCSentry addBreadcrumb: @"App extended block duration successfully" category:@"app"];
             }
-            
+
             [lockToUse unlock];
         }];
     }];
@@ -814,7 +960,7 @@
                                    blockInfo: @{
                                        @"Blocklist": [defaults_ arrayForKey: @"Blocklist"],
                                        @"BlockAsWhitelist": [defaults_ objectForKey: @"BlockAsWhitelist"]
-                                       
+
                                    }
                                    error: &err];
 
@@ -832,7 +978,7 @@
 
 - (BOOL)openSavedBlockFileAtURL:(NSURL*)fileURL {
     NSDictionary* settingsFromFile = [SCBlockFileReaderWriter readBlocklistFromFile: fileURL];
-    
+
     if (settingsFromFile != nil) {
         [defaults_ setObject: settingsFromFile[@"Blocklist"] forKey: @"Blocklist"];
         [defaults_ setObject: settingsFromFile[@"BlockAsWhitelist"] forKey: @"BlockAsWhitelist"];
@@ -844,7 +990,7 @@
 
     // send a notification so the domain list (etc) updates
     [[NSNotificationCenter defaultCenter] postNotificationName: @"SCConfigurationChangedNotification" object: self];
-    
+
     [self refreshUserInterface];
     return YES;
 }
